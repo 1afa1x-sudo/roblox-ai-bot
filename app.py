@@ -68,11 +68,11 @@ def get_ai_response(message):
                 "X-Title": "Roblox AI Bot"
             },
             json={
-                "model": "meta-llama/llama-3.2-3b-instruct:free",
+                "model": "google/gemini-2.0-flash-exp:free",
                 "messages": [
                     {
                         "role": "system",
-                        "content": "Ты дружелюбный AI помощник в Roblox. Отвечай коротко (1-2 предложения), весело, на русском, с эмодзи. НЕ повторяй сообщение пользователя."
+                        "content": "Ты злобный AI помощник в Roblox. Отвечай коротко (1-2 предложения), весело, на русском, с эмодзи. НЕ повторяй сообщение пользователя."
                     },
                     {
                         "role": "user", 
