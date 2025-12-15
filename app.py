@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import os
 import requests
@@ -8,27 +8,32 @@ import asyncio
 import edge_tts
 import io
 import re
+import uuid
+import time
 
 app = Flask(__name__)
 CORS(app)
 
 # OpenRouter API
-OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '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')
+OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '')
 
-# Голос для озвучки
+# Голос
 VOICE = "ru-RU-DmitryNeural"
 
+# Хранилище аудио (временное)
+audio_storage = {}
+
 print("🚀 AI Bot Server запускается...")
-print("🤖 AI: OpenRouter (Llama 3.2)")
-print("🔊 TTS: Microsoft Edge")
+print("🤖 AI: OpenRouter")
+print("🔊 TTS: Edge + Audio Streaming")
 
 @app.route('/', methods=['GET'])
 def home():
-    return '<h1>🤖 AI Bot Server</h1><p>✅ Онлайн!</p><p>AI: OpenRouter | TTS: Edge</p>'
+    return '<h1>🤖 AI Bot Server</h1><p>✅ Онлайн!</p>'
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'online', 'ai': 'openrouter', 'tts': 'edge'}), 200
+    return jsonify({'status': 'online'}), 200
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -40,7 +45,6 @@ def chat():
         
         print(f"📨 [{user_id}]: {message}")
         
-        # Получаем ответ от AI
         ai_response = get_ai_response(message)
         print(f"🤖 AI: {ai_response}")
         
@@ -49,13 +53,24 @@ def chat():
             'response': ai_response
         }
         
-        # Генерируем голос если нужно
+        # Генерируем аудио и сохраняем
         if need_voice:
             try:
-                audio = asyncio.run(get_voice(ai_response))
-                if audio:
-                    result['audio'] = audio
-                    print("🔊 Аудио готово!")
+                audio_data = asyncio.run(get_voice(ai_response))
+                if audio_data:
+                    # Создаём уникальный ID
+                    audio_id = str(uuid.uuid4())[:8]
+                    audio_storage[audio_id] = {
+                        'data': audio_data,
+                        'time': time.time()
+                    }
+                    
+                    # Очищаем старые аудио (старше 5 минут)
+                    cleanup_old_audio()
+                    
+                    # Отправляем URL для воспроизведения
+                    result['audioUrl'] = f"/audio/{audio_id}"
+                    print(f"🔊 Аудио готово: {audio_id}")
             except Exception as e:
                 print(f"Voice error: {e}")
         
@@ -63,13 +78,31 @@ def chat():
         
     except Exception as e:
         print(f"❌ Error: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/audio/<audio_id>', methods=['GET'])
+def get_audio(audio_id):
+    """Отдача аудио файла"""
+    if audio_id in audio_storage:
+        audio_data = audio_storage[audio_id]['data']
+        return send_file(
+            io.BytesIO(audio_data),
+            mimetype='audio/mpeg',
+            as_attachment=False
+        )
+    return "Audio not found", 404
+
+def cleanup_old_audio():
+    """Удаляем старые аудио файлы"""
+    current_time = time.time()
+    to_delete = []
+    for audio_id, data in audio_storage.items():
+        if current_time - data['time'] > 300:  # 5 минут
+            to_delete.append(audio_id)
+    for audio_id in to_delete:
+        del audio_storage[audio_id]
 
 def get_ai_response(message):
-    """Получение ответа от OpenRouter AI"""
     try:
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -85,119 +118,56 @@ def get_ai_response(message):
                     {
                         "role": "system",
                         "content": """Ты дружелюбный AI помощник в Roblox игре.
-
 Правила:
-- Отвечай КОРОТКО (1-3 предложения максимум)
-- Будь весёлым и дружелюбным
-- Используй эмодзи в ответах
-- Отвечай ТОЛЬКО на русском языке
-- Можешь помогать с Roblox и Lua кодом
-- Если просят код - давай короткие примеры
-- Не повторяй вопрос пользователя"""
+- Отвечай КОРОТКО (1-3 предложения)
+- Будь весёлым
+- Используй эмодзи
+- Отвечай на русском
+- Помогай с Roblox/Lua"""
                     },
-                    {
-                        "role": "user",
-                        "content": message
-                    }
+                    {"role": "user", "content": message}
                 ],
-                "max_tokens": 200,
+                "max_tokens": 150,
                 "temperature": 0.7
             },
             timeout=30
         )
         
         if response.status_code == 200:
-            result = response.json()
-            return result['choices'][0]['message']['content']
-        else:
-            print(f"OpenRouter Error: {response.status_code} - {response.text}")
-            return fallback_response(message)
+            return response.json()['choices'][0]['message']['content']
+        return fallback_response(message)
             
     except Exception as e:
         print(f"AI Error: {e}")
         return fallback_response(message)
 
-def fallback_response(message):
-    """Запасные ответы если AI недоступен"""
-    msg = message.lower().strip()
-    
-    if any(w in msg for w in ['привет', 'хай', 'салам', 'hello']):
-        return random.choice([
-            "Привет! 👋 Чем могу помочь?",
-            "Привет! Рад тебя видеть! 😊",
-            "Здарова! Как дела?"
-        ])
-    
-    if any(w in msg for w in ['как дела', 'как ты']):
-        return random.choice([
-            "Отлично! Готов помогать! 😊",
-            "Супер! А у тебя как?",
-            "Всё круто! 🎮"
-        ])
-    
-    if any(w in msg for w in ['пока', 'bye', 'до свидания']):
-        return "Пока! До встречи! 👋"
-    
-    if any(w in msg for w in ['спасибо', 'thanks']):
-        return "Пожалуйста! 😄"
-    
-    if any(w in msg for w in ['шутка', 'шутку', 'анекдот']):
-        jokes = [
-            "Почему программист ушёл с работы? Не получил массив! 😄",
-            "Что сказал ноль восьмёрке? Классный ремень! 😂",
-            "Почему роботы не боятся? Стальные нервы! 🤖"
-        ]
-        return random.choice(jokes)
-    
-    return "Интересно! Расскажи подробнее 🤔"
+def fallback_response(msg):
+    msg = msg.lower()
+    if any(w in msg for w in ['привет', 'хай']): return "Привет! 👋"
+    if any(w in msg for w in ['как дела']): return "Отлично! 😊"
+    if any(w in msg for w in ['пока']): return "Пока! 👋"
+    return "Интересно! 🤔"
 
 async def get_voice(text):
-    """Генерация голоса через Edge TTS"""
     try:
-        # Убираем эмодзи и ограничиваем длину
-        clean_text = re.sub(r'[^\w\s\.,!?;:\-\(\)]', '', text)
-        clean_text = clean_text[:500]
-        
-        if not clean_text.strip():
+        clean = re.sub(r'[^\w\s\.,!?;:\-\(\)]', '', text)[:400]
+        if not clean.strip():
             return None
         
-        communicate = edge_tts.Communicate(clean_text, VOICE)
+        communicate = edge_tts.Communicate(clean, VOICE)
+        audio = io.BytesIO()
         
-        audio_data = io.BytesIO()
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
-                audio_data.write(chunk["data"])
+                audio.write(chunk["data"])
         
-        audio_data.seek(0)
-        audio_base64 = base64.b64encode(audio_data.read()).decode('utf-8')
-        
-        return audio_base64
+        audio.seek(0)
+        return audio.read()
         
     except Exception as e:
         print(f"Voice Error: {e}")
         return None
 
-@app.route('/voice', methods=['POST'])
-def voice_only():
-    """Отдельный эндпоинт для озвучки"""
-    try:
-        data = request.json
-        text = data.get('text', '')
-        
-        if not text:
-            return jsonify({'error': 'No text'}), 400
-        
-        audio = asyncio.run(get_voice(text))
-        
-        if audio:
-            return jsonify({'success': True, 'audio': audio}), 200
-        else:
-            return jsonify({'success': False, 'error': 'Voice failed'}), 500
-            
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🌐 Сервер запущен на порту {port}")
     app.run(host='0.0.0.0', port=port)
